@@ -98,12 +98,13 @@ function _strang_ode_func(sys_mtk, coord_args, tspan, grd; sparse = false)
     jac_coord = build_coord_jac_function(sys_mtk, coord_args, sparse = sparse)
     _prob = ODEProblem(sys_mtk, [], tspan; sparse = sparse, build_initializeprob = false)
 
+    grdt = Tuple(grd) # concretely typed tuple of coordinate ranges, so the splat below is type-stable
     function f_stiff(du, u, p, t)
-        coords = (g[p.ii[j]] for (j, g) in enumerate(grd))
+        coords = map(getindex, grdt, Tuple(p.ii))
         mtkf_coord(du, u, p.p, t, coords...)
     end
     function jac_stiff(du, u, p, t)
-        coords = (g[p.ii[j]] for (j, g) in enumerate(grd))
+        coords = map(getindex, grdt, Tuple(p.ii))
         jac_coord(du, u, p.p, t, coords...)
     end
     ode_f = ODEFunction(f_stiff, jac = jac_stiff, jac_prototype = _prob.f.jac_prototype)
