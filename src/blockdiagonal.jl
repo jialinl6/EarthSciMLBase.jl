@@ -99,17 +99,29 @@ end
 """
 The result of a LU factorization of a block diagonal matrix.
 """
-struct BlockDiagonalLU{T, VF <: AbstractArray{T, 3}, VIP <: AbstractArray{Int64, 2}}
+struct BlockDiagonalLU{T, VF <: AbstractArray{T, 3}, VIP <: AbstractArray{Int64, 2},
+                       MA <: MapAlgorithm}
     factors::VF
     ipiv::VIP
     info::Int64
+    alg::MA      # what `ldiv!` maps over the blocks with
 end
+BlockDiagonalLU(factors, ipiv, info) = BlockDiagonalLU(factors, ipiv, info, MapKernel())
+
+# The algorithm the solve of a factorization of `B` runs on: AcceleratedKernels
+# (the long-standing default, whatever the matrix's own algorithm), unless the
+# matrix asks for Polyester, whose pool the solve must share to avoid waiting on it.
+_ldiv_alg(::MapAlgorithm) = MapKernel()
+_ldiv_alg(alg::MapPolyester) = alg
+_ldiv_alg(B::BlockDiagonal) = _ldiv_alg(B.alg)
+_ldiv_alg(::AbstractBlockDiagonal) = MapKernel()
 
 function ArrayInterface.lu_instance(B::AbstractBlockDiagonal)
     return BlockDiagonalLU(
         similar(B.data),
         similar(B.data, Int64, size(B.data, 1), size(B.data, 3)),
-        0
+        0,
+        _ldiv_alg(B)
     )
 end
 
@@ -139,7 +151,8 @@ function LinearAlgebra.lu!(B::AbstractBlockDiagonal, args...; kwargs...)
     o = BlockDiagonalLU(
         B.data,
         similar(B.data, Int64, size(B.data, 1), size(B.data, 3)),
-        0
+        0,
+        _ldiv_alg(B)
     )
     o2 = _lu!(o, B, args...; kwargs...)
     return o2
@@ -160,7 +173,7 @@ function _lu!(o::BlockDiagonalLU, B::AbstractBlockDiagonal, args...; kwargs...)
     end
     reduce_info(info1, info2) = abs(info1) > abs(info2) ? info1 : info2
     info = mapreduce(i -> flu(i, args...; kwargs...), reduce_info, 1:nblocks(B), init = 0)
-    return BlockDiagonalLU(o.factors, o.ipiv, info)
+    return BlockDiagonalLU(o.factors, o.ipiv, info, o.alg)
 end
 
 # LinearSolve's generic `init_cacheval` allocates `ipiv` as a host
@@ -191,7 +204,7 @@ function LS.generic_lufact!(
 
     info = mapreduce_range(lufunc!, reduce_info, 1:nblocks(A), A.alg, data, ipiv)
 
-    return BlockDiagonalLU(A.data, ipiv, info)
+    return BlockDiagonalLU(A.data, ipiv, info, _ldiv_alg(A))
 end
 function LinearAlgebra.generic_lufact!(
         A::BlockDiagonal, pivot::Union{NoPivot, RowMaximum, RowNonZero}; check = false)
@@ -210,9 +223,10 @@ function LinearAlgebra.ldiv!(x::AbstractVector, A::BlockDiagonalLU, b::AbstractV
         _x = view(x, rng)
         _b = view(b, rng)
         ldiv_factors!(_x, _factors, _ipiv, _b)
+        return nothing   # no per-block result (map algorithms that collect results allocate nothing for it)
     end
     map_closure_to_range(
-        fldiv!, 1:nblocks(A), MapKernel(), A.factors, A.ipiv, x, b)
+        fldiv!, 1:nblocks(A), A.alg, A.factors, A.ipiv, x, b)
     x
 end
 

@@ -1,4 +1,4 @@
-export MapAlgorithm, MapBroadcast, MapThreads, MapKernel, MapReactant
+export MapAlgorithm, MapBroadcast, MapThreads, MapKernel, MapReactant, MapPolyester
 
 """
 A type to specify the algorithm used for performing a computation
@@ -29,6 +29,16 @@ end
 Compile and run computations using MLIR with Reactant.jl
 """
 struct MapReactant <: MapAlgorithm end
+"""
+Perform computations on CPU threads with Polyester.jl's low-latency worker pool
+(the `EarthSciMLBasePolyesterExt` extension; load Polyester to enable it).
+
+Use it when the surrounding code already runs on Polyester (e.g. EarthSciAST's
+generated kernels): its workers keep spinning after a batch, so work handed to
+ordinary Julia tasks right afterwards waits for them and runs nearly serially.
+Without Polyester loaded it falls back to the generic `MapAlgorithm` methods.
+"""
+struct MapPolyester <: MapAlgorithm end
 
 function map_closure_to_range(f, range, ::MapAlgorithm = MapThreads(), args...; kwargs...)
     ThreadsX.map(range) do i
