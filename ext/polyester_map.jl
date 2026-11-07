@@ -5,20 +5,22 @@
 # Like the broadcast and ThreadsX methods, returns the per-index results (`+` and `mul!` of a BlockDiagonal use them),
 # or `nothing` when `f` returns nothing (the block solve). Index 1 runs first, on the calling thread, to fix the result
 # type; every index still runs exactly once.
-function map_closure_to_range(f, range, ::MapPolyester, args...; kwargs...)
-    isempty(range) && return Any[]
+# The range is `rng`, not `range`: `@batch` takes a name that is a constant global (`Base.range`) for that global and
+# lets the loop body close over it, and a closure cannot become the `@cfunction` it runs on aarch64.
+function map_closure_to_range(f, rng, ::MapPolyester, args...; kwargs...)
+    isempty(rng) && return Any[]
     g(i) = f(i, args...; kwargs...)
-    r1 = g(first(range))
+    r1 = g(first(rng))
     if r1 === nothing
-        Polyester.@batch for k in 2:length(range)
-            g(range[k])
+        Polyester.@batch for k in 2:length(rng)
+            g(rng[k])
         end
         return nothing
     end
-    out = Vector{typeof(r1)}(undef, length(range))
+    out = Vector{typeof(r1)}(undef, length(rng))
     out[1] = r1
-    Polyester.@batch for k in 2:length(range)
-        out[k] = g(range[k])
+    Polyester.@batch for k in 2:length(rng)
+        out[k] = g(rng[k])
     end
     return out
 end
