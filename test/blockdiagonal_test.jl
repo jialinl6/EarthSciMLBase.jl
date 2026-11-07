@@ -1,8 +1,11 @@
-using EarthSciMLBase: BlockDiagonal, block, MapKernel, MapReactant, ldiv_factors!
+import EarthSciMLBase
+using EarthSciMLBase: BlockDiagonal, block, MapBroadcast, MapKernel, MapPolyester,
+                      MapReactant, ldiv_factors!
 using LinearAlgebra
 import SciMLOperators as SMO
 using Test
 using LinearSolve
+using Polyester
 
 @testset "LU" begin
     x = BlockDiagonal(rand(3, 3, 2))
@@ -133,6 +136,56 @@ end
         x = BlockDiagonal(zeros(3, 3, 2))
         lx = LinearSolve.generic_lufact!(x, RowMaximum(), ipiv; check = false)
         @test lx.info == 1
+    end
+end
+
+@testset "MapPolyester" begin
+    @test Base.get_extension(EarthSciMLBase, :EarthSciMLBasePolyesterExt) isa Module
+    algs = (MapBroadcast(), MapPolyester())
+    d = rand(4, 4, 64) # enough blocks for the Polyester batch to be split across threads
+    b = rand(4 * 64)
+    lus = map(algs) do alg
+        ipiv = zeros(Int64, size(d, 1), size(d, 3))
+        LinearSolve.generic_lufact!(BlockDiagonal(copy(d), alg), RowMaximum(), ipiv)
+    end
+    @test lus[1].alg isa MapKernel # the solve stays on MapKernel unless asked for Polyester
+    @test lus[2].alg isa MapPolyester
+    @test lus[2].factors == lus[1].factors
+    @test lus[2].ipiv == lus[1].ipiv
+    @test lus[2].info == lus[1].info == 0
+
+    xs = map(lu -> LinearAlgebra.ldiv!(similar(b), lu, b), lus)
+    @test xs[2] == xs[1]
+    @test xs[1] ≈ Matrix(BlockDiagonal(d)) \ b
+
+    @testset "Singular" begin
+        ds = copy(d)
+        ds[:, :, 37] .= 0
+        infos = map(algs) do alg
+            ipiv = zeros(Int64, size(d, 1), size(d, 3))
+            LinearSolve.generic_lufact!(
+                BlockDiagonal(copy(ds), alg), RowMaximum(), ipiv; check = false).info
+        end
+        @test infos[2] == infos[1] == 1
+    end
+
+    @testset "GenericLUFactorization cache" begin
+        d2 = rand(4, 4, 64)
+        sols = map(algs) do alg
+            cache = init(LinearProblem(BlockDiagonal(copy(d), alg), copy(b)),
+                GenericLUFactorization())
+            x1 = copy(solve!(cache).u)
+            # Refactorize into the same cache: the stored LU must keep its type.
+            cache.A = BlockDiagonal(copy(d2), alg)
+            x2 = copy(solve!(cache).u)
+            (x1, x2, cache.cacheval[1].alg)
+        end
+        @test sols[1][3] isa MapKernel
+        @test sols[2][3] isa MapPolyester
+        @test sols[2][1] == sols[1][1]
+        @test sols[2][2] == sols[1][2]
+        @test sols[1][1] ≈ Matrix(BlockDiagonal(d)) \ b
+        @test sols[1][2] ≈ Matrix(BlockDiagonal(d2)) \ b
     end
 end
 
